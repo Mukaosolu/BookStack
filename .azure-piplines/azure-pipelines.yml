@@ -1,0 +1,103 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  name: BuildAgents  # Your own agent pool (self-hosted or Microsoft-hosted)
+
+variables:
+  phpVersion: '8.2'
+
+steps:
+  - checkout: self
+
+  # Install PHP 8.2 and required extensions
+  - script: |
+      sudo add-apt-repository ppa:ondrej/php -y
+      sudo apt-get update
+      sudo apt-get install -y php8.2 php8.2-cli php8.2-mbstring php8.2-xml php8.2-zip php8.2-bcmath php8.2-intl php8.2-curl unzip git
+      sudo update-alternatives --install /usr/bin/php php /usr/bin/php8.2 100
+      sudo update-alternatives --install /usr/bin/php-config php-config /usr/bin/php-config8.2 100
+      sudo update-alternatives --install /usr/bin/phpize phpize /usr/bin/phpize8.2 100
+      php -v
+    displayName: 'Install and switch to PHP 8.2'
+
+  # Install Composer
+  - script: |
+      curl -sS https://getcomposer.org/installer | php
+      sudo mv composer.phar /usr/local/bin/composer
+      composer --version
+    displayName: 'Install Composer'
+
+  # Install Composer dependencies
+  - script: |
+      php -v
+      composer install --no-dev --optimize-autoloader
+    displayName: 'Install Composer dependencies'
+
+  # Package BookStack app and deployment script
+  - script: |
+      zip -r bookstack.zip . -x "*.git*" "*.zip" "tests/*" ".github/*"
+      mv bookstack.zip $(Build.ArtifactStagingDirectory)/
+      # Optional: Create a dummy deploy script if needed
+      echo "#!/bin/bash" > deploy-Linux.sh
+      echo "echo Deploy script placeholder" >> deploy-Linux.sh
+      chmod +x deploy-Linux.sh
+      mv deploy-Linux.sh $(Build.ArtifactStagingDirectory)/
+    displayName: 'Package app and deploy script'
+
+  # Check contents of Artifact Staging Directory
+  - script: |
+      ls -lh $(Build.ArtifactStagingDirectory)
+    displayName: 'Check contents of Artifact Staging Directory'
+
+  # Publish build artifacts
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'drop'
+      publishLocation: 'Container'
+    displayName: 'Publish build artifacts'
+
+  # Download build artifact for deployment
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      artifactName: 'drop'
+      targetPath: '$(Pipeline.Workspace)/drop'
+    displayName: 'Download Build Artifact'
+
+  # Check downloaded build artifacts
+  - script: |
+      ls -lh $(Pipeline.Workspace)/drop
+    displayName: 'Check downloaded artifacts'
+
+  # Upload build artifacts to the Linux VM
+  - task: CopyFilesOverSSH@0
+    inputs:
+      sshEndpoint: 'Linux-vm-ssh'
+      sourceFolder: '$(Pipeline.Workspace)/drop'
+      contents: '**'
+      targetFolder: '/tmp/deploy'
+    displayName: 'Copy build artifacts to Linux VM'
+
+  # Verify files on the Linux VM
+  - task: SSH@0
+    inputs:
+      sshEndpoint: 'Linux-vm-ssh'
+      runOptions: 'inline'
+      inline: |
+        echo "Checking contents of /tmp/deploy:"
+        ls -lh /tmp/deploy
+    displayName: 'Verify files on Linux VM'
+
+  # Deploy BookStack to the Linux VM
+  - task: SSH@0
+    inputs:
+     sshEndpoint: 'Linux-vm-ssh'
+     runOptions: 'inline'
+     inline: |
+        echo "Running deploy-Linux.sh script..."
+        chmod +x /tmp/deploy/deploy-Linux.sh
+        sudo /tmp/deploy/deploy-Linux.sh
+    displayName: 'Deploy to Linux VM using deploy-Linux.sh'
